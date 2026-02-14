@@ -1,0 +1,43 @@
+# Generic local development database
+# Copy to project root: cp .claude/scripts/docker-compose.yml ./docker-compose.yml
+# Then customize service names, ports, and DB name for your project.
+#
+# Usage:
+#   docker compose up -d        # start
+#   docker compose down          # stop
+#   docker compose logs -f       # tail logs
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-app_dev}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - with-redis
+
+volumes:
+  pgdata:
+  redisdata:

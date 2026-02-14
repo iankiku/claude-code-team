@@ -1,12 +1,12 @@
 # Team Skills — Agent Orchestration & Skills
 
-![Team Skills Preview](preview.png)
-
 Orchestrate agents in parallel and enforce agent task loop closing and cleanup.
 
 **Spawn agent teams that work in parallel, prove their work with self-healing gates, and ship PRs without human touch.**
 
 Drop into any repo, run `cli init`, and get team orchestration, self-healing verification, parallel worktree development, and 25 specialized skills.
+
+![Team Skills Preview](preview.png)
 
 ## How It Works
 
@@ -62,30 +62,86 @@ Agent teams support multiple display modes for monitoring agent activity. Pick o
 Split-pane mode requires one of:
 
 - **tmux** — Install via your package manager:
-  ```bash
-  # macOS
-  brew install tmux
-
-  # Ubuntu/Debian
-  sudo apt install tmux
-  ```
+  - macOS:
+    ```bash
+    brew install tmux
+    ```
+  - Ubuntu/Debian:
+    ```bash
+    sudo apt install tmux
+    ```
 - **iTerm2** — Install the [it2 CLI](https://iterm2.com/utilities/it2), then enable **iTerm2 → Settings → General → Magic → Enable Python API**
 
 ---
 
 ## Quick Start
 
+### One-Prompt Setup
+
+Paste this into Claude Code inside your project:
+
+```
+Clone git@github.com:iankiku/claude-code-team.git and set up Team Skills in this project:
+
+1. If a .claude/ directory already exists, merge the cloned repo's .claude/ contents into it (add new files, don't overwrite existing ones). If no .claude/ directory exists, copy the entire .claude/ folder in.
+2. Update .claude/settings.local.json — if the file exists, merge these keys into it (preserve existing settings). If it doesn't exist, create it with this content:
+   {
+     "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" },
+     "teammateMode": "tmux"
+   }
+3. Run .claude/scripts/cli init to detect my build system.
+4. Delete the cloned claude-code-team repo to clean up.
+```
+
+### Manual Setup
+
+**Clone the repo:**
+
 ```bash
-# 1. Initialize (writes .claude/project.json with detected commands)
+git clone git@github.com:iankiku/claude-code-team.git
+```
+
+**Copy `.claude/` into your project:**
+
+```bash
+cp -r claude-code-team/.claude /path/to/your/project/
+```
+
+**Configure agent teams** — add to `.claude/settings.local.json` (create if it doesn't exist):
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "teammateMode": "tmux"
+}
+```
+
+**Initialize (detects your build system and writes `project.json`):**
+
+```bash
 .claude/scripts/cli init
+```
 
-# 2. Run the full gate (lint + typecheck + build + test)
+**Run the full gate (lint + typecheck + build + test):**
+
+```bash
 .claude/scripts/cli gate
+```
 
-# 3. Or use slash commands in Claude Code
-/team-lead build a user auth system     # Spawns coordinated agent team
-/gate-verify                            # Self-healing verification loop
-/worktree create backend-api            # Create isolated worktree
+**Or use slash commands in Claude Code:**
+
+```
+/team-lead build a user auth system
+```
+
+```
+/gate-verify
+```
+
+```
+/worktree create backend-api
 ```
 
 ---
@@ -123,14 +179,14 @@ Supports: **Bun, npm, pnpm, Yarn, Cargo, Go, Python, Make.**
 
 Central command runner. Config-first with auto-detection fallback.
 
-```bash
-cli init              # Detect build system, write project.json
-cli gate              # lint + typecheck + build + test (stops on failure)
-cli gatekeep -g       # Same, with structured PASS/FAIL report
-cli gatekeep -a       # Start app, verify it responds
-cli gatekeep --all    # Everything: lint + typecheck + build + test + app + UI
-cli lint|build|test   # Run individual checks
-```
+| Command | Purpose |
+|---------|---------|
+| `cli init` | Detect build system, write project.json |
+| `cli gate` | lint + typecheck + build + test (stops on failure) |
+| `cli gatekeep -g` | Same, with structured PASS/FAIL report |
+| `cli gatekeep -a` | Start app, verify it responds |
+| `cli gatekeep --all` | Everything: lint + typecheck + build + test + app + UI |
+| `cli lint\|build\|test` | Run individual checks |
 
 ### Scripts (`scripts/`)
 
@@ -233,15 +289,15 @@ Self-healing verification loop. Runs checks, reads errors, fixes them, repeats.
 
 #### Usage Examples
 
-```
-/gate-verify           # Full gate: lint + typecheck + build + test (up to 4 iterations)
-/gate-verify 6         # Custom max iterations
-/gate-verify -t        # Tests only
-/gate-verify -l        # Lint only
-/gate-verify -b        # Build only
-/gate-verify -a        # Start dev server, verify it responds
-/gate-verify --all     # Everything including app startup and UI tests
-```
+| Command | Purpose |
+|---------|---------|
+| `/gate-verify` | Full gate: lint + typecheck + build + test (up to 4 iterations) |
+| `/gate-verify 6` | Custom max iterations |
+| `/gate-verify -t` | Tests only |
+| `/gate-verify -l` | Lint only |
+| `/gate-verify -b` | Build only |
+| `/gate-verify -a` | Start dev server, verify it responds |
+| `/gate-verify --all` | Everything including app startup and UI tests |
 
 Typical flow: agent writes code → runs `/gate-verify` → lint fails on unused import → agent removes it → re-runs → typecheck fails on missing type → agent adds it → re-runs → all pass → GATE PASSED.
 
@@ -249,15 +305,25 @@ Typical flow: agent writes code → runs `/gate-verify` → lint fails on unused
 
 Git worktree management for parallel agent development.
 
+**Create isolated worktrees** (placed outside repo root to avoid build tool scanning):
+
 ```bash
-# Create isolated worktrees (placed outside repo root to avoid build tool scanning)
 bun .claude/skills/worktree/scripts/create-worktree.ts backend-api
+```
+
+```bash
 bun .claude/skills/worktree/scripts/create-worktree.ts frontend-ui
+```
 
-# List all worktrees
+**List all worktrees:**
+
+```bash
 bun .claude/skills/worktree/scripts/list-worktrees.ts
+```
 
-# Clean up after merging
+**Clean up after merging:**
+
+```bash
 bun .claude/skills/worktree/scripts/cleanup-worktrees.ts
 ```
 
@@ -344,10 +410,19 @@ I use worktrees so parallel agents don't load the same monorepo into context. Ag
 
 ## Portability
 
-1. Copy `.claude/` into any repo
-2. Run `.claude/scripts/cli init`
-3. All skills and scripts read from the generated `project.json`
-4. Delete skills you don't need — each is self-contained
+```bash
+git clone git@github.com:iankiku/claude-code-team.git
+```
+
+```bash
+cp -r claude-code-team/.claude /path/to/your/project/
+```
+
+```bash
+.claude/scripts/cli init
+```
+
+Then delete any skills you don't need — each is self-contained.
 
 **25 skills, 4,400 lines total. Zero project-specific content.**
 
@@ -363,13 +438,24 @@ Learn how Claude Code agent teams work: [Agent Teams Documentation](https://code
 
 This is open-source. To contribute:
 
-1. **Test locally** — Copy `.claude/` into a test project, run `cli init` and `cli gate`
-2. **Keep it portable** — No project-specific paths, configs, or dependencies
-3. **Add to existing skills** or create new ones in `skills/`
-4. **Open an issue first** if adding major features — discuss before PR
-5. **Keep SKILL.md lean** — Progressive disclosure: metadata → body → references
+1. **Clone the repo:**
+   ```bash
+   git clone git@github.com:iankiku/claude-code-team.git
+   ```
+2. **Test locally** — Copy `.claude/` into a test project, run `cli init` and `cli gate`
+3. **Keep it portable** — No project-specific paths, configs, or dependencies
+4. **Add to existing skills** or create new ones in `skills/`
+5. **Open an issue first** if adding major features — discuss before PR
+6. **Keep SKILL.md lean** — Progressive disclosure: metadata → body → references
 
 **Key rule**: Every skill must work in any repo without modification.
+
+---
+
+## Roadmap
+
+- [ ] Plugin setup — package as a one-click installable Claude Code plugin
+- [ ] Add to plugin marketplace — publish to the Claude Code plugin marketplace for discovery
 
 ---
 
@@ -380,4 +466,3 @@ Open source. Built by [@iankiku](https://github.com/iankiku)
 ### Contributor
 
 **Ian Kiku** — [X/Twitter](https://x.com/iankiku) · [LinkedIn](https://linkedin.com/in/iankiku) · [GitHub](https://github.com/iankiku)
-# claude-code-team

@@ -1,0 +1,16 @@
+{
+  "buildSystem": "bun",
+  "language": "typescript",
+  "framework": "nextjs",
+  "commands": {
+    "install": "bun install",
+    "dev": "bun run dev",
+    "build": "bun run build",
+    "test": "bun run test",
+    "lint": "bun run lint",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "verification": {
+    "appUrl": "http://localhost:3000"
+  }
+}

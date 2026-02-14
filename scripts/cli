@@ -1,0 +1,515 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Generic project command runner
+# Run `./cli init` once per project to cache config.
+# All subsequent commands read from .claude/project.json — zero detection cost.
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+CONFIG="$REPO_ROOT/.claude/project.json"
+
+# ─── Config-first: read cached config if it exists ───
+
+read_config_cmd() {
+  local key="$1"
+  if [ -f "$CONFIG" ]; then
+    node -e "
+      const c = require('$CONFIG');
+      const cmd = (c.commands || {})['$key'];
+      if (cmd) { console.log(cmd); process.exit(0); }
+      process.exit(1);
+    " 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+read_config_field() {
+  local field="$1"
+  if [ -f "$CONFIG" ]; then
+    node -e "
+      const c = require('$CONFIG');
+      if (c['$field']) { console.log(c['$field']); process.exit(0); }
+      process.exit(1);
+    " 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# ─── Build system detection (fallback when no config) ───
+
+detect_build_system() {
+  if [ -f "$REPO_ROOT/bun.lockb" ] || [ -f "$REPO_ROOT/bun.lock" ]; then echo "bun"
+  elif [ -f "$REPO_ROOT/pnpm-lock.yaml" ]; then echo "pnpm"
+  elif [ -f "$REPO_ROOT/yarn.lock" ]; then echo "yarn"
+  elif [ -f "$REPO_ROOT/package-lock.json" ] || [ -f "$REPO_ROOT/package.json" ]; then echo "npm"
+  elif [ -f "$REPO_ROOT/Cargo.toml" ]; then echo "cargo"
+  elif [ -f "$REPO_ROOT/go.mod" ]; then echo "go"
+  elif [ -f "$REPO_ROOT/pyproject.toml" ] || [ -f "$REPO_ROOT/setup.py" ]; then echo "python"
+  elif [ -f "$REPO_ROOT/Makefile" ]; then echo "make"
+  else echo "unknown"; fi
+}
+
+get_build_system() {
+  read_config_field "buildSystem" 2>/dev/null || detect_build_system
+}
+
+PKG="$(get_build_system)"
+
+# ─── Run a command: config first, then fallback ───
+
+run_cmd() {
+  local name="$1"
+  # Try cached command from project.json
+  local cmd
+  cmd="$(read_config_cmd "$name" 2>/dev/null)" && {
+    cd "$REPO_ROOT" && eval "$cmd"
+    return $?
+  }
+  # Fallback to auto-detection
+  "cmd_${name}_fallback" 2>/dev/null || echo "No '$name' command configured. Run ./cli init"
+}
+
+# ─── Fallback implementations (used only when no config) ───
+
+cmd_lint_fallback() {
+  case "$PKG" in
+    bun|pnpm|yarn|npm) cd "$REPO_ROOT" && $PKG run lint ;;
+    cargo)  cd "$REPO_ROOT" && cargo clippy ;;
+    go)     cd "$REPO_ROOT" && go vet ./... ;;
+    python) cd "$REPO_ROOT" && ruff check . 2>/dev/null || python -m flake8 . ;;
+    make)   cd "$REPO_ROOT" && make lint ;;
+    *)      echo "Cannot detect linter" && return 1 ;;
+  esac
+}
+
+cmd_typecheck_fallback() {
+  case "$PKG" in
+    bun|pnpm|yarn|npm)
+      if [ -f "$REPO_ROOT/tsconfig.json" ]; then cd "$REPO_ROOT" && npx tsc --noEmit
+      else echo "No tsconfig.json found"; fi ;;
+    cargo)  echo "Type checking is part of cargo build" ;;
+    go)     echo "Type checking is part of go build" ;;
+    python) cd "$REPO_ROOT" && mypy . 2>/dev/null || pyright . ;;
+    *)      echo "No type checker detected" ;;
+  esac
+}
+
+cmd_build_fallback() {
+  case "$PKG" in
+    bun|pnpm|yarn|npm) cd "$REPO_ROOT" && $PKG run build ;;
+    cargo)  cd "$REPO_ROOT" && cargo build ;;
+    go)     cd "$REPO_ROOT" && go build ./... ;;
+    python) echo "No build step for Python" ;;
+    make)   cd "$REPO_ROOT" && make build ;;
+    *)      echo "Cannot detect build command" && return 1 ;;
+  esac
+}
+
+cmd_test_fallback() {
+  case "$PKG" in
+    bun|pnpm|yarn|npm) cd "$REPO_ROOT" && $PKG run test ;;
+    cargo)  cd "$REPO_ROOT" && cargo test ;;
+    go)     cd "$REPO_ROOT" && go test ./... ;;
+    python) cd "$REPO_ROOT" && pytest 2>/dev/null || python -m unittest discover ;;
+    make)   cd "$REPO_ROOT" && make test ;;
+    *)      echo "Cannot detect test command" && return 1 ;;
+  esac
+}
+
+cmd_dev_fallback() {
+  case "$PKG" in
+    bun|pnpm|yarn|npm) cd "$REPO_ROOT" && $PKG run dev ;;
+    cargo)  cd "$REPO_ROOT" && cargo run ;;
+    go)     cd "$REPO_ROOT" && go run . ;;
+    make)   cd "$REPO_ROOT" && make dev ;;
+    *)      echo "Cannot detect dev command" && return 1 ;;
+  esac
+}
+
+# ─── Init: detect everything, write config ───
+
+cmd_init() {
+  local bs
+  bs="$(detect_build_system)"
+
+  echo "Detecting project at: $REPO_ROOT"
+  echo "Build system: $bs"
+
+  # Detect language
+  local lang="unknown"
+  if [ -f "$REPO_ROOT/tsconfig.json" ]; then lang="typescript"
+  elif [ -f "$REPO_ROOT/Cargo.toml" ]; then lang="rust"
+  elif [ -f "$REPO_ROOT/go.mod" ]; then lang="go"
+  elif [ -f "$REPO_ROOT/pyproject.toml" ] || [ -f "$REPO_ROOT/setup.py" ]; then lang="python"
+  elif [ -f "$REPO_ROOT/package.json" ]; then lang="javascript"
+  fi
+
+  # Detect framework
+  local framework="none"
+  if [ -f "$REPO_ROOT/next.config.ts" ] || [ -f "$REPO_ROOT/next.config.js" ] || [ -f "$REPO_ROOT/next.config.mjs" ]; then
+    framework="nextjs"
+  elif [ -f "$REPO_ROOT/vite.config.ts" ] || [ -f "$REPO_ROOT/vite.config.js" ]; then
+    framework="vite"
+  elif [ -f "$REPO_ROOT/nuxt.config.ts" ]; then
+    framework="nuxt"
+  elif [ -f "$REPO_ROOT/angular.json" ]; then
+    framework="angular"
+  elif [ -f "$REPO_ROOT/svelte.config.js" ]; then
+    framework="sveltekit"
+  elif [ -f "$REPO_ROOT/manage.py" ]; then
+    framework="django"
+  elif [ -f "$REPO_ROOT/Cargo.toml" ] && grep -q "actix\|axum\|rocket" "$REPO_ROOT/Cargo.toml" 2>/dev/null; then
+    framework="rust-web"
+  fi
+
+  # Build commands based on detected system
+  local install_cmd="" dev_cmd="" build_cmd="" test_cmd="" lint_cmd="" typecheck_cmd="" format_cmd=""
+
+  case "$bs" in
+    bun|pnpm|yarn|npm)
+      install_cmd="$bs install"
+      # Read actual scripts from package.json
+      local scripts
+      scripts="$(cd "$REPO_ROOT" && node -e "
+        const pkg = require('./package.json');
+        console.log(JSON.stringify(Object.keys(pkg.scripts || {})));
+      " 2>/dev/null)" || scripts="[]"
+
+      has_pkg_script() { echo "$scripts" | node -e "process.exit(JSON.parse(require('fs').readFileSync(0,'utf8')).includes('$1') ? 0 : 1)" 2>/dev/null; }
+
+      has_pkg_script "dev"        && dev_cmd="$bs run dev"
+      has_pkg_script "build"      && build_cmd="$bs run build"
+      has_pkg_script "test"       && test_cmd="$bs run test"
+      has_pkg_script "lint"       && lint_cmd="$bs run lint"
+      has_pkg_script "type-check" && typecheck_cmd="$bs run type-check"
+      has_pkg_script "typecheck"  && typecheck_cmd="$bs run typecheck"
+      has_pkg_script "format"     && format_cmd="$bs run format"
+
+      # Fallback typecheck if tsconfig exists but no script
+      if [ -z "$typecheck_cmd" ] && [ -f "$REPO_ROOT/tsconfig.json" ]; then
+        typecheck_cmd="npx tsc --noEmit"
+      fi
+      ;;
+    cargo)
+      install_cmd="cargo build"
+      build_cmd="cargo build"
+      test_cmd="cargo test"
+      lint_cmd="cargo clippy"
+      format_cmd="cargo fmt"
+      ;;
+    go)
+      install_cmd="go mod download"
+      build_cmd="go build ./..."
+      test_cmd="go test ./..."
+      lint_cmd="go vet ./..."
+      ;;
+    python)
+      install_cmd="pip install -e ."
+      test_cmd="pytest"
+      lint_cmd="ruff check ."
+      typecheck_cmd="mypy ."
+      format_cmd="ruff format ."
+      [ -f "$REPO_ROOT/pyproject.toml" ] && grep -q "poetry" "$REPO_ROOT/pyproject.toml" 2>/dev/null && install_cmd="poetry install"
+      [ -f "$REPO_ROOT/pyproject.toml" ] && grep -q "uv" "$REPO_ROOT/pyproject.toml" 2>/dev/null && install_cmd="uv sync"
+      ;;
+    make)
+      build_cmd="make build"
+      test_cmd="make test"
+      lint_cmd="make lint"
+      ;;
+  esac
+
+  # Detect verification config
+  local app_url="" healthcheck="" ui_test=""
+
+  case "$framework" in
+    nextjs)    app_url="http://localhost:3000" ;;
+    vite)      app_url="http://localhost:5173" ;;
+    nuxt)      app_url="http://localhost:3000" ;;
+    angular)   app_url="http://localhost:4200" ;;
+    sveltekit) app_url="http://localhost:5173" ;;
+    django)    app_url="http://localhost:8000" ;;
+  esac
+
+  # Detect UI test framework
+  if [ -f "$REPO_ROOT/playwright.config.ts" ] || [ -f "$REPO_ROOT/playwright.config.js" ]; then
+    ui_test="npx playwright test"
+  elif [ -f "$REPO_ROOT/cypress.config.ts" ] || [ -f "$REPO_ROOT/cypress.config.js" ]; then
+    ui_test="npx cypress run"
+  fi
+
+  # Write config — pass values via env vars to avoid shell escaping issues
+  mkdir -p "$(dirname "$CONFIG")"
+  _BS="$bs" _LANG="$lang" _FW="$framework" \
+  _INSTALL="${install_cmd:-}" _DEV="${dev_cmd:-}" _BUILD="${build_cmd:-}" \
+  _TEST="${test_cmd:-}" _LINT="${lint_cmd:-}" _TC="${typecheck_cmd:-}" \
+  _FMT="${format_cmd:-}" \
+  _APP_URL="${app_url:-}" _HEALTH="${healthcheck:-}" _UI="${ui_test:-}" \
+  node -e "
+    const e = process.env;
+    const config = {
+      buildSystem: e._BS,
+      language: e._LANG,
+      framework: e._FW,
+      commands: {},
+      verification: {}
+    };
+    const cmds = {
+      install: e._INSTALL, dev: e._DEV, build: e._BUILD,
+      test: e._TEST, lint: e._LINT, typecheck: e._TC, format: e._FMT
+    };
+    for (const [k, v] of Object.entries(cmds)) {
+      if (v) config.commands[k] = v;
+    }
+    const verify = {
+      appUrl: e._APP_URL, healthcheck: e._HEALTH, uiTest: e._UI
+    };
+    for (const [k, v] of Object.entries(verify)) {
+      if (v) config.verification[k] = v;
+    }
+    if (Object.keys(config.verification).length === 0) delete config.verification;
+    process.stdout.write(JSON.stringify(config, null, 2) + '\n');
+  " > "$CONFIG"
+
+  echo ""
+  echo "Wrote: $CONFIG"
+  echo ""
+  cat "$CONFIG"
+  echo ""
+  echo "Edit .claude/project.json to override any commands."
+}
+
+# ─── Gatekeep: verification with flags ───
+
+read_verification_field() {
+  local field="$1"
+  if [ -f "$CONFIG" ]; then
+    node -e "
+      const c = require('$CONFIG');
+      const v = (c.verification || {})['$field'];
+      if (v) { console.log(typeof v === 'object' ? JSON.stringify(v) : v); process.exit(0); }
+      process.exit(1);
+    " 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+cmd_gatekeep() {
+  local do_lint=false do_build=false do_test=false do_typecheck=false do_app=false do_ui=false
+  local flags="${1:-}"
+
+  if [ -z "$flags" ]; then
+    # Default: lint + build + test
+    do_lint=true; do_build=true; do_test=true
+  else
+    case "$flags" in
+      -l|--lint)      do_lint=true ;;
+      -b|--build)     do_build=true ;;
+      -t|--test)      do_test=true ;;
+      -c|--typecheck) do_typecheck=true ;;
+      -a|--app)       do_app=true ;;
+      -u|--ui)        do_ui=true ;;
+      -g|--gate)      do_lint=true; do_typecheck=true; do_build=true; do_test=true ;;
+      --all)          do_lint=true; do_typecheck=true; do_build=true; do_test=true; do_app=true; do_ui=true ;;
+      *)              echo "Unknown flag: $flags"; echo "Use: -l(int) -b(uild) -t(est) -c(typecheck) -a(pp) -u(i) -g(ate) --all"; return 1 ;;
+    esac
+  fi
+
+  local failed=0 passed=0 blocked=0
+
+  report() {
+    local layer="$1" status="$2"
+    case "$status" in
+      PASS)    echo "  $layer ... PASS"; ((passed++)) ;;
+      FAIL)    echo "  $layer ... FAIL"; ((failed++)) ;;
+      BLOCKED) echo "  $layer ... BLOCKED"; ((blocked++)) ;;
+      SKIP)    echo "  $layer ... SKIP" ;;
+    esac
+  }
+
+  echo "==========================================="
+  echo "  Gatekeeper — Verification Report"
+  echo "==========================================="
+  echo ""
+
+  if $do_lint; then
+    echo "--- Lint ---"
+    if run_cmd "lint" 2>&1; then report "Lint" "PASS"; else report "Lint" "FAIL"; fi
+    echo ""
+  fi
+
+  if $do_typecheck; then
+    echo "--- Type Check ---"
+    if run_cmd "typecheck" 2>&1; then report "Typecheck" "PASS"; else report "Typecheck" "FAIL"; fi
+    echo ""
+  fi
+
+  if $do_build; then
+    echo "--- Build ---"
+    if run_cmd "build" 2>&1; then report "Build" "PASS"; else report "Build" "FAIL"; fi
+    echo ""
+  fi
+
+  if $do_test; then
+    echo "--- Tests ---"
+    if run_cmd "test" 2>&1; then report "Tests" "PASS"; else report "Tests" "FAIL"; fi
+    echo ""
+  fi
+
+  if $do_app; then
+    echo "--- App Startup ---"
+    local app_start app_url app_health
+    app_start="$(read_verification_field "appStart" 2>/dev/null)" || app_start=""
+    app_url="$(read_verification_field "appUrl" 2>/dev/null)" || app_url=""
+    app_health="$(read_verification_field "healthcheck" 2>/dev/null)" || app_health=""
+
+    if [ -z "$app_start" ]; then
+      # Try to use dev command
+      app_start="$(read_config_cmd "dev" 2>/dev/null)" || app_start=""
+    fi
+
+    if [ -z "$app_start" ]; then
+      report "App Startup" "BLOCKED"
+      echo "    No appStart or dev command in project.json"
+    else
+      echo "  Starting: $app_start"
+      cd "$REPO_ROOT" && eval "$app_start" &
+      local APP_PID=$!
+      sleep "${APP_WAIT:-8}"
+
+      if kill -0 "$APP_PID" 2>/dev/null; then
+        echo "  Process running (PID: $APP_PID)"
+        if [ -n "$app_url" ]; then
+          local check_url="$app_url${app_health:-}"
+          echo "  Checking: $check_url"
+          if curl -sf "$check_url" -o /dev/null --max-time 5; then
+            report "App Startup" "PASS"
+            echo "    $check_url responded OK"
+          else
+            report "App Startup" "FAIL"
+            echo "    $check_url did not respond"
+          fi
+        else
+          report "App Startup" "PASS"
+          echo "    Process started (no URL to verify)"
+        fi
+        kill "$APP_PID" 2>/dev/null; wait "$APP_PID" 2>/dev/null
+      else
+        report "App Startup" "FAIL"
+        echo "    Process exited immediately"
+      fi
+    fi
+    echo ""
+  fi
+
+  if $do_ui; then
+    echo "--- UI Tests ---"
+    local ui_cmd
+    ui_cmd="$(read_verification_field "uiTest" 2>/dev/null)" || ui_cmd=""
+
+    if [ -z "$ui_cmd" ]; then
+      # Auto-detect Playwright / Cypress
+      if [ -f "$REPO_ROOT/playwright.config.ts" ] || [ -f "$REPO_ROOT/playwright.config.js" ]; then
+        ui_cmd="npx playwright test"
+      elif [ -f "$REPO_ROOT/cypress.config.ts" ] || [ -f "$REPO_ROOT/cypress.config.js" ]; then
+        ui_cmd="npx cypress run"
+      fi
+    fi
+
+    if [ -z "$ui_cmd" ]; then
+      report "UI Tests" "BLOCKED"
+      echo "    No uiTest in project.json, no playwright/cypress config found"
+    else
+      echo "  Running: $ui_cmd"
+      if cd "$REPO_ROOT" && eval "$ui_cmd" 2>&1; then
+        report "UI Tests" "PASS"
+      else
+        report "UI Tests" "FAIL"
+      fi
+    fi
+    echo ""
+  fi
+
+  echo "==========================================="
+  echo "  RESULT: $passed PASS, $failed FAIL, $blocked BLOCKED"
+  echo "==========================================="
+
+  [ "$failed" -eq 0 ] && return 0 || return 1
+}
+
+# ─── Gate: run all checks ───
+
+cmd_gate() {
+  local failed=0
+  echo "=== Gate: lint ==="
+  run_cmd "lint" || failed=1
+  echo ""
+  echo "=== Gate: typecheck ==="
+  run_cmd "typecheck" || failed=1
+  echo ""
+  echo "=== Gate: build ==="
+  run_cmd "build" || failed=1
+  echo ""
+  echo "=== Gate: test ==="
+  run_cmd "test" || failed=1
+  echo ""
+  if [ "$failed" -eq 0 ]; then
+    echo "GATE PASSED"
+  else
+    echo "GATE FAILED — see errors above"
+    return 1
+  fi
+}
+
+# ─── Info: show current config ───
+
+cmd_info() {
+  if [ -f "$CONFIG" ]; then
+    echo "Project config: $CONFIG"
+    echo ""
+    cat "$CONFIG"
+  else
+    echo "No .claude/project.json found. Run: ./cli init"
+    echo ""
+    echo "Auto-detected: $PKG (in $REPO_ROOT)"
+  fi
+}
+
+# ─── Main ───
+
+case "${1:-help}" in
+  init)      cmd_init ;;
+  info)      cmd_info ;;
+  lint)      run_cmd "lint" ;;
+  typecheck) run_cmd "typecheck" ;;
+  build)     run_cmd "build" ;;
+  test)      run_cmd "test" ;;
+  dev)       run_cmd "dev" ;;
+  gate)      cmd_gate ;;
+  gatekeep)  cmd_gatekeep "${2:-}" ;;
+  *)
+    echo "Usage: ./cli <command> [flags]"
+    echo ""
+    echo "  init       Detect project and write .claude/project.json (run once)"
+    echo "  info       Show cached config or auto-detected build system"
+    echo "  lint       Run linter"
+    echo "  typecheck  Run type checker"
+    echo "  build      Build the project"
+    echo "  test       Run tests"
+    echo "  dev        Start dev server"
+    echo "  gate       Run all checks: lint + typecheck + build + test"
+    echo "  gatekeep   Verify project works (default: lint + build + test)"
+    echo ""
+    echo "Gatekeep flags:"
+    echo "  -l  lint only       -b  build only       -t  tests only"
+    echo "  -c  typecheck only  -a  app startup       -u  UI tests"
+    echo "  -g  full gate       --all  everything"
+    echo ""
+    if [ -f "$CONFIG" ]; then
+      echo "Config: $CONFIG"
+    else
+      echo "No config found. Run: ./cli init"
+      echo "Auto-detected: $PKG"
+    fi
+    ;;
+esac
